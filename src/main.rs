@@ -1,7 +1,9 @@
 use std::collections::HashMap;
-use std::{fs, thread};
+use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+
+use once_cell::sync::Lazy;
 
 const BUFFER_SIZE: usize = 1024;
 const SERVER_ADDRESS: &str = "127.0.0.1";
@@ -17,21 +19,30 @@ mod errors {
 	pub const INVALID_COMMAND: &str = "Command not recognized";
 }
 
-fn process_command(mut stream: TcpStream, command_map: &HashMap<&str, fn(&str) -> String>) {
+type CommandHandler = fn(&str) -> String;
+type CommandMap = HashMap<&'static str, CommandHandler>;
+
+static COMMAND_MAP: Lazy<CommandMap> = Lazy::new(|| {
+	let mut command_map = HashMap::new();
+	command_map.insert("list", list as CommandHandler);
+	command_map.insert("retr", retr as CommandHandler);
+
+	return command_map;
+});
+
+fn process_command(mut stream: TcpStream) {
 	let mut buffer = [0; BUFFER_SIZE];
 	stream.read(&mut buffer).expect(errors::READ_FAILED);
 
 	let request = String::from_utf8_lossy(&buffer[..]);
 
 	let mut parts = request.splitn(2, ' ');
-	let command = parts.next().unwrap_or("");
-	let args = parts.next().unwrap_or("");
+	let command = parts.next().unwrap_or("").trim_matches('\0').trim();
+	let args = parts.next().unwrap_or("").trim_matches('\0').trim();
 	std::mem::drop(parts);
 
-	let f = command_map.get(command);
-
-	let response = match f {
-		Some(f) => f(args),
+	let response = match COMMAND_MAP.get(command) {
+		Some(handler) => handler(args),
 		None => String::from(errors::INVALID_COMMAND),
 	};
 
@@ -68,7 +79,7 @@ fn main() {
 	for stream in listener.incoming() {
 		match stream {
 			Ok(stream) => {
-				std::thread::spawn(move || process_command(stream, &command_map));
+				std::thread::spawn(move || process_command(stream));
 			}
 			Err(error) => {
 				eprintln!("{}", format!("{}: {}", errors::CONN_FAILED, error));
