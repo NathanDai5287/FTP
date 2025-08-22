@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 
 use once_cell::sync::Lazy;
@@ -31,24 +31,30 @@ static COMMAND_MAP: Lazy<CommandMap> = Lazy::new(|| {
 });
 
 fn process_command(mut stream: TcpStream) {
-	let mut buffer = [0; BUFFER_SIZE];
-	stream.read(&mut buffer).expect(errors::READ_FAILED);
+	let peer = stream.try_clone().unwrap();
+	let mut reader = BufReader::new(peer);
 
-	let request = String::from_utf8_lossy(&buffer[..]);
+	loop {
+		let mut line = String::new();
+		let n = reader.read_line(&mut line).unwrap();
+		if n == 0 {
+			break;
+		}
 
-	let mut parts = request.splitn(2, ' ');
-	let command = parts.next().unwrap_or("").trim_matches('\0').trim();
-	let args = parts.next().unwrap_or("").trim_matches('\0').trim();
-	std::mem::drop(parts);
+		let mut parts = line.splitn(2, ' ');
+		let command = parts.next().unwrap_or("").trim_matches('\0').trim();
+		let args = parts.next().unwrap_or("").trim_matches('\0').trim();
+		std::mem::drop(parts);
 
-	let response = match COMMAND_MAP.get(command) {
-		Some(handler) => handler(args),
-		None => String::from(errors::INVALID_COMMAND),
-	};
+		let response = match COMMAND_MAP.get(command) {
+			Some(handler) => handler(args),
+			None => String::from(errors::INVALID_COMMAND),
+		};
 
-	stream
-		.write(response.as_bytes())
-		.expect(errors::WRITE_FAILED);
+		stream
+			.write_all(response.as_bytes())
+			.expect(errors::WRITE_FAILED);
+	}
 }
 
 fn list(_args: &str) -> String {
