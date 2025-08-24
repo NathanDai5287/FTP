@@ -1,12 +1,11 @@
 mod command_handlers;
+mod virtual_file_system;
 
+use crate::virtual_file_system::SessionState;
+use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-
-use once_cell::sync::Lazy;
-
-use crate::command_handlers::{list, retr};
 
 const BUFFER_SIZE: usize = 1024;
 const SERVER_ADDRESS: &str = "127.0.0.1";
@@ -22,21 +21,20 @@ mod errors {
 	pub const INVALID_COMMAND: &str = "Command not recognized";
 }
 
-type CommandHandler = fn(&str) -> String;
+type CommandHandler = fn(&mut SessionState, &str) -> String;
 type CommandMap = HashMap<&'static str, CommandHandler>;
 
 static COMMAND_MAP: Lazy<CommandMap> = Lazy::new(|| {
 	let mut command_map = HashMap::new();
-	command_map.insert("list", list as CommandHandler);
-	command_map.insert("retr", retr as CommandHandler);
+
+	command_map.insert("list", command_handlers::list as CommandHandler);
+	command_map.insert("retr", command_handlers::retr);
+
+	command_map.insert("pwd", command_handlers::pwd);
 
 	return command_map;
 });
 fn main() {
-	let mut command_map: HashMap<&str, fn(&str) -> String> = HashMap::new();
-	command_map.insert("list", list);
-	command_map.insert("retr", retr);
-
 	let full_address = format!("{SERVER_ADDRESS}:{SERVER_PORT}");
 	let listener = TcpListener::bind(&full_address).expect(errors::BIND_FAILED);
 	println!("Server listening on {full_address}");
@@ -44,7 +42,10 @@ fn main() {
 	for stream in listener.incoming() {
 		match stream {
 			Ok(stream) => {
-				std::thread::spawn(move || process_command(stream));
+				std::thread::spawn(move || {
+					let session = SessionState::new(VIRTUAL_ROOT);
+					process_command(session, stream);
+				});
 			}
 			Err(error) => {
 				eprintln!("{}", format!("{}: {}", errors::CONN_FAILED, error));
@@ -53,7 +54,7 @@ fn main() {
 	}
 }
 
-fn process_command(mut stream: TcpStream) {
+fn process_command(mut session: SessionState, mut stream: TcpStream) {
 	let peer = stream.try_clone().unwrap();
 	let mut reader = BufReader::with_capacity(BUFFER_SIZE, peer);
 
@@ -70,7 +71,7 @@ fn process_command(mut stream: TcpStream) {
 		std::mem::drop(parts);
 
 		let response = match COMMAND_MAP.get(command) {
-			Some(handler) => handler(args),
+			Some(handler) => handler(&mut session, args),
 			None => String::from(errors::INVALID_COMMAND),
 		};
 
